@@ -1,4 +1,4 @@
-name: 为 Redmi EA0326 编译官方 ImmortalWrt
+name: 为 EA0326 编译官方 ImmortalWrt
 
 on:
   workflow_dispatch:
