@@ -326,8 +326,11 @@ jobs:
           tag_name: v${{ env.TAG_TIME }} # 使用我们工作流中生成的 tag_name
           body_path: release.txt
           files: |
+            ${{ env.FIRMWARE }}/*uboot.fip
+            ${{ env.FIRMWARE }}/*recovery.itb
+            ${{ env.FIRMWARE }}/*preloader.bin
+            ${{ env.FIRMWARE }}/*sysupgrade.itb
             ${{ env.FIRMWARE }}/*factory.bin
-            ${{ env.FIRMWARE }}/*sysupgrade.bin
             ${{ env.FIRMWARE }}/sha256sums
         env:
           GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN }} # 使用你指定的 RELEASE_TOKEN
