@@ -381,8 +381,10 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN }}
 
-      - name: 批量上传文件到 Release (容错)
+      - name: 批量上传文件到 Release (容错 - 修复版)
         if: steps.prepare_release_files.outputs.files_exist == 'true' && env.UPLOAD_RELEASE == 'true'
+        env:
+          RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
         run: |
           echo "开始批量上传文件到 Release..."
           
@@ -392,8 +394,12 @@ jobs:
           fi
           
           RELEASE_TAG="v${{ env.TAG_TIME }}"
+          REPO_NAME="${{ github.repository }}"
           UPLOAD_SUCCESS=0
           UPLOAD_TOTAL=0
+          
+          echo "使用 Release Tag: $RELEASE_TAG"
+          echo "仓库: $REPO_NAME"
           
           while IFS= read -r filepath; do
             if [ -f "$filepath" ]; then
@@ -401,22 +407,38 @@ jobs:
               filename=$(basename "$filepath")
               echo "正在上传: $filename"
               
+              # 检查文件大小
+              filesize=$(stat -c%s "$filepath")
+              echo "文件大小: $filesize 字节"
+              
               # 使用 curl 上传，每个文件独立处理
-              if curl -f -s -H "Authorization: token ${{ secrets.RELEASE_TOKEN }}" \
+              if curl -f \
+                 -H "Authorization: token $RELEASE_TOKEN" \
                  -H "Content-Type: application/octet-stream" \
                  --data-binary @"$filepath" \
-                 "https://uploads.github.com/repos/${{ github.repository }}/releases/tags/$RELEASE_TAG/assets?name=$filename" > /dev/null; then
+                 "https://uploads.github.com/repos/$REPO_NAME/releases/tags/$RELEASE_TAG/assets?name=$filename"; then
                 echo "✅ 上传成功: $filename"
                 ((UPLOAD_SUCCESS++))
               else
-                echo "::warning::上传失败: $filename (文件可能已存在或其他错误)"
+                echo "::warning::上传失败: $filename"
+                # 尝试显示更多错误信息
+                curl -v \
+                 -H "Authorization: token $RELEASE_TOKEN" \
+                 -H "Content-Type: application/octet-stream" \
+                 --data-binary @"$filepath" \
+                 "https://uploads.github.com/repos/$REPO_NAME/releases/tags/$RELEASE_TAG/assets?name=$filename" 2>&1 | grep -i "error\|fail" || true
               fi
+              
+              # 短暂暂停避免频率限制
+              sleep 1
             fi
           done < filelist.txt
           
           echo "上传完成: $UPLOAD_SUCCESS/$UPLOAD_TOTAL 个文件成功上传"
           if [ $UPLOAD_SUCCESS -eq 0 ]; then
             echo "::warning::没有文件被成功上传，但 Release 已创建"
+          else
+            echo "✅ 文件上传完成！"
           fi
 
       - name: 清理旧的 Workflow 运行记录
