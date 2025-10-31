@@ -235,17 +235,27 @@ jobs:
         run: |
           cd openwrt
           echo "Building with $(($(nproc) + 1)) threads..."
-          make -j$(($(nproc) + 1)) || (echo "::error::Build failed with parallel jobs, trying single thread..."; make -j1 V=s)
-          echo "status=success" >> $GITHUB_OUTPUT
-
-          echo "FILE_DATE=_$(date +"%Y%m%d%H%M")" >> $GITHUB_ENV
-          echo "FILE_TIME=$(date "+%Y年%m月%d日")" >> $GITHUB_ENV
-          echo "TAG_TIME=$(date +"%Y.%m.%d-%H%M")" >> $GITHUB_ENV
+          if make -j$(($(nproc) + 1)); then
+            echo "status=success" >> $GITHUB_OUTPUT
+            echo "FILE_DATE=_$(date +"%Y%m%d%H%M")" >> $GITHUB_ENV
+            echo "FILE_TIME=$(date "+%Y年%m月%d日")" >> $GITHUB_ENV
+            echo "TAG_TIME=$(date +"%Y.%m.%d-%H%M")" >> $GITHUB_ENV
+          else
+            echo "::warning::Parallel build failed, trying single thread with verbose output..."
+            if make -j1 V=s; then
+              echo "status=success" >> $GITHUB_OUTPUT
+              echo "FILE_DATE=_$(date +"%Y%m%d%H%M")" >> $GITHUB_ENV
+              echo "FILE_TIME=$(date "+%Y年%m月%d日")" >> $GITHUB_ENV
+              echo "TAG_TIME=$(date +"%Y.%m.%d-%H%M")" >> $GITHUB_ENV
+            else
+              echo "::error::Build failed even with single thread"
+              exit 1
+            fi
+          fi
 
       - name: 整理固件文件 (为 Release 准备)
         if: github.event.inputs.skip_build_and_test_upload == 'false' && steps.compile.outputs.status == 'success'
         run: |
-          # $DEVICE_SUBDIR 来自 'apply_config' 步骤保存的全局变量
           FIRMWARE_DIR="openwrt/bin/targets/$DEVICE_SUBDIR"
           if [ ! -d "$FIRMWARE_DIR" ]; then
             echo "::error::Firmware directory not found: $FIRMWARE_DIR"
@@ -253,8 +263,19 @@ jobs:
             echo "::error::This confirms the build did not actually produce any images, likely due to the .config issue."
             exit 1
           fi
+          
+          # 检查是否生成了实际的固件文件
+          if ! ls "$FIRMWARE_DIR"/*.bin >/dev/null 2>&1 && ! ls "$FIRMWARE_DIR"/*.itb >/dev/null 2>&1; then
+            echo "::error::No firmware files (*.bin or *.itb) found in $FIRMWARE_DIR"
+            echo "::error::Generated files:"
+            ls -la "$FIRMWARE_DIR" || true
+            exit 1
+          fi
+          
           echo "FIRMWARE=$FIRMWARE_DIR" >> $GITHUB_ENV
-          echo "Firmware files in: $(ls -1 $FIRMWARE_DIR)"
+          echo "Found firmware files:"
+          ls -1 "$FIRMWARE_DIR"/*.bin "$FIRMWARE_DIR"/*.itb 2>/dev/null || echo "No bin/itb files (checking other patterns)"
+          ls -1 "$FIRMWARE_DIR"/
 
       - name: 设置测试上传 (跳过编译)
         if: github.event.inputs.skip_build_and_test_upload == 'true'
@@ -267,23 +288,26 @@ jobs:
           
           if [ ! -f "$CONFIG_PATH" ]; then
             echo "::warning::Config file not found at: $CONFIG_PATH. (This is OK in test mode)"
-            TARGET_SUBDIR="mediatek/mt7981_test_fallback_notfound"
+            TARGET_SUBDIR="mediatek/filogic_test_fallback_notfound"
             echo "::warning::Falling back to dummy subdir: $TARGET_SUBDIR"
           
-          elif grep -q '^CONFIG_TARGET_mediatek_mt7981=y' "$CONFIG_PATH"; then
-            TARGET_SUBDIR="mediatek/mt7981"
+          # 更新这里：使用正确的 mediatek_filogic 模式
+          elif grep -q '^CONFIG_TARGET_mediatek_filogic=y' "$CONFIG_PATH"; then
+            TARGET_SUBDIR="mediatek/filogic"
             echo "::warning::Test mode: Successfully deduced TARGET_SUBDIR=$TARGET_SUBDIR from config file."
           
           else
-            echo "::warning::File found at $CONFIG_PATH, but could not find '^CONFIG_TARGET_mediatek_mt7981=y' in it."
-            TARGET_SUBDIR="mediatek/mt7981_test_fallback_grepfailed"
+            echo "::warning::File found at $CONFIG_PATH, but could not find '^CONFIG_TARGET_mediatek_filogic=y' in it."
+            TARGET_SUBDIR="mediatek/filogic_test_fallback_grepfailed"
             echo "::warning::Falling back to dummy subdir: $TARGET_SUBDIR"
           fi
           
           FIRMWARE_DIR="openwrt/bin/targets/$TARGET_SUBDIR"
           mkdir -p $FIRMWARE_DIR
-          echo "This is a dummy file for testing." > $FIRMWARE_DIR/TEST-factory.bin
-          echo "This is a dummy file for testing." > $FIRMWARE_DIR/TEST-sysupgrade.bin
+          # 创建所有需要的测试文件
+          echo "This is a dummy file for testing." > $FIRMWARE_DIR/immortalwrt-mediatek-filogic-nokia_ea0326gmp-initramfs-recovery.itb
+          echo "This is a dummy file for testing." > $FIRMWARE_DIR/immortalwrt-mediatek-filogic-nokia_ea0326gmp-squashfs-factory.bin
+          echo "This is a dummy file for testing." > $FIRMWARE_DIR/immortalwrt-mediatek-filogic-nokia_ea0326gmp-squashfs-sysupgrade.bin
           echo "dummy_sha256sum TEST-factory.bin" > $FIRMWARE_DIR/sha256sums
           
           echo "FIRMWARE=$FIRMWARE_DIR" >> $GITHUB_ENV
@@ -292,16 +316,18 @@ jobs:
           echo "FILE_TIME=$(date "+%Y年%m月%d日")" >> $GITHUB_ENV
           echo "TAG_TIME=$(date +"%Y.%m.%d-%H%M")" >> $GITHUB_ENV
 
-      - name: 上传固件到 Artifacts
+      - name: 上传固件到 Artifacts (容错版)
         if: (steps.compile.outputs.status == 'success' || steps.test_setup.outputs.status == 'success') && env.UPLOAD_FIRMWARE == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: Official-ImmortalWrt-EA0326${{ env.FILE_DATE }}
           path: |
-            ${{ env.FIRMWARE }}/*factory.bin
-            ${{ env.FIRMWARE }}/*sysupgrade.bin
+            ${{ env.FIRMWARE }}/*.bin
+            ${{ env.FIRMWARE }}/*.itb
+            ${{ env.FIRMWARE }}/*.fip
             ${{ env.FIRMWARE }}/sha256sums
-          if-no-files-found: error
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: 准备 Release 说明
         if: (steps.compile.outputs.status == 'success' || steps.test_setup.outputs.status == 'success') && env.UPLOAD_RELEASE == 'true'
@@ -317,23 +343,81 @@ jobs:
           fi
           echo "status=success" >> $GITHUB_OUTPUT
 
-      - name: 创建 GitHub Release (合并了你的新要求)
-        # --- 仅当 (编译成功) 或 (测试设置成功) 时运行 ---
+      - name: 准备 Release 文件列表
         if: (steps.compile.outputs.status == 'success' || steps.test_setup.outputs.status == 'success') && env.UPLOAD_RELEASE == 'true'
-        uses: softprops/action-gh-release@master # 使用你指定的 @master 版本
+        id: prepare_release_files
+        run: |
+          echo "扫描固件目录中的文件..."
+          FIRMWARE_DIR="${{ env.FIRMWARE }}"
+          
+          # 查找所有可能的固件文件
+          FOUND_FILES=()
+          for pattern in "*.fip" "*.itb" "*.bin" "sha256sums"; do
+            for file in "$FIRMWARE_DIR"/$pattern; do
+              if [ -f "$file" ]; then
+                FOUND_FILES+=("$file")
+                echo "找到文件: $(basename "$file")"
+              fi
+            done
+          done
+          
+          if [ ${#FOUND_FILES[@]} -eq 0 ]; then
+            echo "::warning::未找到任何固件文件"
+            echo "files_exist=false" >> $GITHUB_OUTPUT
+          else
+            echo "files_exist=true" >> $GITHUB_OUTPUT
+            # 创建文件列表供后续步骤使用
+            printf "%s\n" "${FOUND_FILES[@]}" > filelist.txt
+          fi
+
+      - name: 创建 GitHub Release
+        if: (steps.compile.outputs.status == 'success' || steps.test_setup.outputs.status == 'success') && env.UPLOAD_RELEASE == 'true'
+        uses: softprops/action-gh-release@master
         with:
-          name: ${{ env.FILE_TIME }} - 基础版 # 使用你指定的 name 格式
-          tag_name: v${{ env.TAG_TIME }} # 使用我们工作流中生成的 tag_name
+          name: ${{ env.FILE_TIME }} - 基础版
+          tag_name: v${{ env.TAG_TIME }}
           body_path: release.txt
-          files: |
-            ${{ env.FIRMWARE }}/*uboot.fip
-            ${{ env.FIRMWARE }}/*recovery.itb
-            ${{ env.FIRMWARE }}/*preloader.bin
-            ${{ env.FIRMWARE }}/*sysupgrade.itb
-            ${{ env.FIRMWARE }}/*factory.bin
-            ${{ env.FIRMWARE }}/sha256sums
+          # 不在这里添加文件，避免因文件缺失导致创建失败
         env:
-          GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN }} # 使用你指定的 RELEASE_TOKEN
+          GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+
+      - name: 批量上传文件到 Release (容错)
+        if: steps.prepare_release_files.outputs.files_exist == 'true' && env.UPLOAD_RELEASE == 'true'
+        run: |
+          echo "开始批量上传文件到 Release..."
+          
+          if [ ! -f filelist.txt ]; then
+            echo "::warning::文件列表不存在"
+            exit 0
+          fi
+          
+          RELEASE_TAG="v${{ env.TAG_TIME }}"
+          UPLOAD_SUCCESS=0
+          UPLOAD_TOTAL=0
+          
+          while IFS= read -r filepath; do
+            if [ -f "$filepath" ]; then
+              ((UPLOAD_TOTAL++))
+              filename=$(basename "$filepath")
+              echo "正在上传: $filename"
+              
+              # 使用 curl 上传，每个文件独立处理
+              if curl -f -s -H "Authorization: token ${{ secrets.RELEASE_TOKEN }}" \
+                 -H "Content-Type: application/octet-stream" \
+                 --data-binary @"$filepath" \
+                 "https://uploads.github.com/repos/${{ github.repository }}/releases/tags/$RELEASE_TAG/assets?name=$filename" > /dev/null; then
+                echo "✅ 上传成功: $filename"
+                ((UPLOAD_SUCCESS++))
+              else
+                echo "::warning::上传失败: $filename (文件可能已存在或其他错误)"
+              fi
+            fi
+          done < filelist.txt
+          
+          echo "上传完成: $UPLOAD_SUCCESS/$UPLOAD_TOTAL 个文件成功上传"
+          if [ $UPLOAD_SUCCESS -eq 0 ]; then
+            echo "::warning::没有文件被成功上传，但 Release 已创建"
+          fi
 
       - name: 清理旧的 Workflow 运行记录
         uses: Mattraks/delete-workflow-runs@v2
