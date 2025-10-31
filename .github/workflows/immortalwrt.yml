@@ -271,7 +271,6 @@ jobs:
             ${{ env.FIRMWARE }}/*.bin
             ${{ env.FIRMWARE }}/*.itb
             ${{ env.FIRMWARE }}/sha256sums
-            ${{ env.FIRMWARE }}/bl2.bin
 
       # --- [ 新的上传部分结束 ] ---
 
