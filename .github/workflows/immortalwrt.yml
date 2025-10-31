@@ -26,8 +26,8 @@ jobs:
   build:
     runs-on: ubuntu-22.04
     permissions:
-      contents: write # 授予 'GITHUB_TOKEN' 写入权限, 以允许创建 Release 和上传附件
-      actions: write  # 授予 'GITHUB_TOKEN' 写入权限, 以允许清理旧的 Actions runs
+      contents: write
+      actions: write
 
     timeout-minutes: 360
 
@@ -57,8 +57,8 @@ jobs:
             build-essential ccache ecj fastjar file g++ gawk \
             gettext git java-propose-classpath libelf-dev \
             libncurses5-dev libncursesw5-dev libssl-dev \
-            python3-distutils python3-dev python3-pip jq \
-            rsync subversion sudo unzip wget xz-utils zlib1g-dev
+            python3-distutils python3-dev python3-pip \
+            rsync subversion sudo unzip wget xz-utils zlib1g-dev jq
           sudo timedatectl set-timezone "$TZ"
           sudo mkdir -p /workdir
           sudo chown $USER:$USER /workdir
@@ -230,6 +230,7 @@ jobs:
           echo "dummy" > $FIRMWARE_DIR/immortalwrt-mediatek-filogic-nokia_ea0326gmp-squashfs-factory.bin
           echo "dummy" > $FIRMWARE_DIR/immortalwrt-mediatek-filogic-nokia_ea0326gmp-squashfs-sysupgrade.bin
           echo "dummy" > $FIRMWARE_DIR/sha256sums
+          echo "dummy" > $FIRMWARE_DIR/bl2.bin
           
           echo "FIRMWARE=$FIRMWARE_DIR" >> $GITHUB_ENV
           echo "status=success" >> $GITHUB_OUTPUT
@@ -237,7 +238,9 @@ jobs:
           echo "FILE_TIME=$(date "+%Y年%m月%d日")" >> $GITHUB_ENV
           echo "TAG_TIME=$(date +"%Y.%m.%d-%H%M")" >> $GITHUB_ENV
 
-      - name: 上传固件到 Artifacts
+      # --- [ 新的上传部分开始 ] ---
+
+      - name: 上传固件到 Artifacts (用于临时存档)
         if: (steps.compile.outputs.status == 'success' || steps.test_setup.outputs.status == 'success') && env.UPLOAD_FIRMWARE == 'true'
         uses: actions/upload-artifact@v4
         with:
@@ -246,107 +249,35 @@ jobs:
             ${{ env.FIRMWARE }}/*.bin
             ${{ env.FIRMWARE }}/*.itb
             ${{ env.FIRMWARE }}/sha256sums
-          if-no-files-found: warn
+            ${{ env.FIRMWARE }}/bl2.bin
+          if-no-files-found: error
           retention-days: 7
 
-      - name: 准备 Release 说明
+      - name: 创建 Release 并上传固件 (整合版)
         if: (steps.compile.outputs.status == 'success' || steps.test_setup.outputs.status == 'success') && env.UPLOAD_RELEASE == 'true'
-        run: |
-          cat <<EOF >release.txt
-          Official ImmortalWrt for Redmi EA0326
-          Branch: ${{ env.REPO_BRANCH }}
-          默认IP：192.168.2.223
-          默认密码：password（首次登录请设置）
-          ✅ 支持 IPv6、SQM、Docker（可选）、AdGuard Home（可选）
-          构建时间：${{ env.FILE_TIME }}
-          ${{ github.event.inputs.skip_build_and_test_upload == 'true' && '--- (这是一个测试 Release) ---' || '' }}
-          EOF
-
-      - name: 準備 Release 文件列表
-        if: (steps.compile.outputs.status == 'success' || steps.test_setup.outputs.status == 'success') && env.UPLOAD_RELEASE == 'true'
-        id: prepare_release_files
-        run: |
-          FIRMWARE_DIR="${{ env.FIRMWARE }}"
-          find "$FIRMWARE_DIR" -type f \( -name "*.bin" -o -name "*.itb" -o -name "sha256sums" \) > filelist.txt
-          if [ ! -s filelist.txt ]; then
-            echo "::warning::未找到任何固件文件用于 Release"
-            echo "files_exist=false" >> $GITHUB_OUTPUT
-          else
-            echo "找到以下文件准备上传:"
-            cat filelist.txt
-            echo "files_exist=true" >> $GITHUB_OUTPUT
-          fi
-
-      - name: 创建 GitHub Release
-        if: steps.prepare_release_files.outputs.files_exist == 'true' && env.UPLOAD_RELEASE == 'true'
         uses: softprops/action-gh-release@v2
         with:
           name: ${{ env.FILE_TIME }} - 基础版
           tag_name: v${{ env.TAG_TIME }}
-          body_path: release.txt
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          body: |
+            Official ImmortalWrt for Redmi EA0326
+            Branch: ${{ env.REPO_BRANCH }}
+            默认IP：192.168.2.223
+            默认密码：password（首次登录请设置）
+            ✅ 支持 IPv6、SQM、Docker（可选）、AdGuard Home（可选）
+            构建时间：${{ env.FILE_TIME }}
+            ${{ github.event.inputs.skip_build_and_test_upload == 'true' && '--- (这是一个测试 Release) ---' || '' }}
+          files: |
+            ${{ env.FIRMWARE }}/*.bin
+            ${{ env.FIRMWARE }}/*.itb
+            ${{ env.FIRMWARE }}/sha256sums
+            ${{ env.FIRMWARE }}/bl2.bin
 
-      - name: 批量上传文件到 Release (最终修复版)
-        if: steps.prepare_release_files.outputs.files_exist == 'true' && env.UPLOAD_RELEASE == 'true'
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          echo "开始批量上传文件到 Release..."
-          RELEASE_TAG="v${{ env.TAG_TIME }}"
-          
-          UPLOAD_URL_JSON=$(curl -s -H "Authorization: token $GITHUB_TOKEN" "https://api.github.com/repos/${{ github.repository }}/releases/tags/$RELEASE_TAG")
-          UPLOAD_URL=$(echo "$UPLOAD_URL_JSON" | jq -r .upload_url)
-          
-          if [ -z "$UPLOAD_URL" ] || [ "$UPLOAD_URL" == "null" ]; then
-            echo "::error::无法获取 Release 的 upload_url。"
-            echo "API Response: $UPLOAD_URL_JSON"
-            exit 1
-          fi
-          
-          UPLOAD_URL_CLEAN=$(echo "$UPLOAD_URL" | sed 's/{?name,label}//')
-          
-          echo "使用 Release Tag: $RELEASE_TAG"
-          echo "上传端点: $UPLOAD_URL_CLEAN"
-          
-          UPLOAD_SUCCESS=0
-          UPLOAD_TOTAL=$(wc -l < filelist.txt)
-          
-          # 【关键修复】修改 while 循环条件，以优雅处理文件末尾，避免 `set -e` 误触发
-          while IFS= read -r filepath <&3 || [[ -n "$filepath" ]]; do
-            # 如果 filepath 为空 (这是最后一次 read 失败后的循环)，则跳过
-            [ -z "$filepath" ] && continue
-
-            filename=$(basename "$filepath")
-            echo ">>> 正在上传: $filename"
-            
-            response_code=$(curl -s -o /dev/null -w "%{http_code}" \
-             -H "Authorization: token $GITHUB_TOKEN" \
-             -H "Content-Type: application/octet-stream" \
-             --data-binary @"$filepath" \
-             "$UPLOAD_URL_CLEAN?name=$filename")
-            
-            if [ "$response_code" -eq 201 ]; then
-              echo "✅ 上传成功: $filename"
-              ((UPLOAD_SUCCESS++))
-            else
-              echo "::warning::上传失败: $filename (HTTP Status: $response_code)"
-            fi
-            sleep 1
-          done 3< filelist.txt # 将 filelist.txt 绑定到文件描述符 3
-
-          echo "---"
-          echo "上传汇总: $UPLOAD_SUCCESS/$UPLOAD_TOTAL 个文件成功上传。"
-          if [ "$UPLOAD_SUCCESS" -lt "$UPLOAD_TOTAL" ]; then
-             echo "::warning::部分文件上传失败，请检查 Release 页面。"
-          elif [ "$UPLOAD_SUCCESS" -eq 0 ] && [ "$UPLOAD_TOTAL" -gt 0 ]; then
-             echo "::error::所有文件上传均失败！"
-             exit 1
-          fi
+      # --- [ 新的上传部分结束 ] ---
 
       - name: 清理旧的 Workflow 运行记录
         uses: Mattraks/delete-workflow-runs@v2
-        if: always() # 确保无论成功失败都执行
+        if: always()
         with:
           retain_days: 2
           keep_minimum_runs: 3
