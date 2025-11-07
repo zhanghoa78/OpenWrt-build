@@ -1,195 +1,218 @@
+# 工作流名称
 name: 编译 ImmortalWrt 固件
 
+# 全局环境变量，所有作业共享
+env:
+  REPO_URL: https://github.com/immortalwrt/immortalwrt.git
+  REPO_BRANCH: ${{ github.event.inputs.immortalwrt_version }}
+  CONFIG_FILE: ${{ github.event.inputs.config_file }}
+  DIY_P1_SH: config/DIY-1.sh
+  DIY_P2_SH: config/DIY-2.sh
+  UPLOAD_RELEASE: 'true'
+  TZ: Asia/Shanghai
+
+# 工作流触发条件
 on:
   workflow_dispatch:
     inputs:
       immortalwrt_version:
         description: '1. 选择要编译的 ImmortalWrt 版本'
         required: true
-        default: 'openwrt-24.10'
+        default: 'openwrt-23.05'
         type: choice
         options:
           - master
-          - openwrt-24.10
           - openwrt-23.05
           - openwrt-21.02
       config_file:
-        description: '2. 输入 .config 文件在仓库中的完整路径（如 config/ea0326.config）'
+        description: '2. 输入 .config 文件在仓库中的完整路径'
         required: true
         default: 'config/ea0326.config'
         type: string
       ssh:
         description: '3. (可选) 在编译前进入 SSH 调试'
         required: false
-        default: 'false'
+        default: false # boolean 类型的 default 应该是 false, 而不是字符串 'false'
         type: boolean
 
 jobs:
+  #####################################################################
+  # 作业 1: 检查配置，为后续作业提供输出
+  #####################################################################
   check:
-    name: 🔬 版本与配置审核 (${{ github.event.inputs.immortalwrt_version }})
+    name: 🔬 版本与配置审核 (${{ env.REPO_BRANCH }})
     runs-on: ubuntu-22.04
-    env:
-      REPO_URL: https://github.com/immortalwrt/immortalwrt.git
-      REPO_BRANCH: ${{ github.event.inputs.immortalwrt_version }}
-      CONFIG_FILE: ${{ github.event.inputs.config_file }}
-      DIY_P1_SH: config/DIY-1.sh
-      DIY_P2_SH: config/DIY-2.sh
-      TZ: Asia/Shanghai
     outputs:
-      device_name: ${{ steps.get_device_name.outputs.device_name }}
-      target_subdir: ${{ steps.get_device_name.outputs.target_subdir }}
+      device_name: ${{ steps.get_device_info.outputs.device_name }}
+      target_subdir: ${{ steps.get_device_info.outputs.target_subdir }}
+
     steps:
-      - name: 检出当前仓库代码
+      - name: 检出仓库代码
         uses: actions/checkout@v4
 
-      - name: 【前置】检查 .config 文件是否存在
+      - name: 验证配置文件路径
         run: |
           if [ ! -f "${{ env.CONFIG_FILE }}" ]; then
-            echo "::error::配置文件未找到！请确认你输入的路径 '${{ env.CONFIG_FILE }}' 在代码仓库中是正确的。"
+            echo "::error::配置文件未找到！路径: '${{ env.CONFIG_FILE }}'"
             exit 1
           fi
-          echo "✅ 配置文件存在：${{ env.CONFIG_FILE }}"
+          echo "✅ 配置文件存在: ${{ env.CONFIG_FILE }}"
 
-      - name: 【前置】检查 DIY 脚本是否存在（非必需）
-        run: |
-          if [ -f "${{ env.DIY_P1_SH }}" ]; then
-            echo "✅ DIY-1.sh 存在"
-          else
-            echo "⚠️ DIY-1.sh 不存在，跳过"
-          fi
-          if [ -f "${{ env.DIY_P2_SH }}" ]; then
-            echo "✅ DIY-2.sh 存在"
-          else
-            echo "⚠️ DIY-2.sh 不存在，跳过"
-          fi
+      - name: 克隆 ImmortalWrt 源码 (仅用于检查)
+        run: git clone --depth=1 -b "${{ env.REPO_BRANCH }}" "${{ env.REPO_URL }}" openwrt
 
-      - name: 克隆 ImmortalWrt 源码
-        run: |
-          git clone --depth=1 -b "${{ env.REPO_BRANCH }}" "${{ env.REPO_URL }}" openwrt
-          cd openwrt
-          cp "../${{ env.CONFIG_FILE }}" .config
-          make defconfig
-
-      - name: 【核心】提取设备名称和目标路径
-        id: get_device_name
+      - name: 提取设备信息
+        id: get_device_info
         working-directory: ./openwrt
         run: |
+          cp "../${{ env.CONFIG_FILE }}" .config
+          make defconfig
           DEVICE_LINE=$(grep '^CONFIG_TARGET_.*_DEVICE_.*=y' .config)
           if [ -z "$DEVICE_LINE" ]; then
-            echo "::error::无法从 .config 中识别设备型号，请检查配置文件是否适配 ${{ env.REPO_BRANCH }} 分支。"
+            echo "::error::无法从 .config 识别设备型号，请检查配置文件是否适配 ${{ env.REPO_BRANCH }} 分支。"
             exit 1
           fi
-          DEVICE_NAME=$(echo "$DEVICE_LINE" | sed -E 's/.*CONFIG_TARGET_.+_DEVICE_(.+)=y/\1/')
-          TARGET_SUBDIR=$(make print-CONFIG_TARGET_BOARD 2>/dev/null | cut -d'=' -f2)/$(make print-CONFIG_TARGET_SUBTARGET 2>/dev/null | cut -d'=' -f2)
-          echo "device_name=$DEVICE_NAME" >> $GITHUB_OUTPUT
-          echo "target_subdir=$TARGET_SUBDIR" >> $GITHUB_OUTPUT
-          echo "✅ 识别设备: $DEVICE_NAME, 目标路径: $TARGET_SUBDIR"
+          # 从 .config 中提取设备型号
+          DEVICE_NAME=$(echo "$DEVICE_LINE" | sed -E 's/.*DEVICE_(.+)=y/\1/')
+          # 使用 make print-... 命令更准确地获取目标路径
+          BOARD=$(make print-CONFIG_TARGET_BOARD | cut -d'=' -f2)
+          SUBTARGET=$(make print-CONFIG_TARGET_SUBTARGET | cut -d'=' -f2)
+          TARGET_SUBDIR="$BOARD/$SUBTARGET"
+          
+          echo "device_name=${DEVICE_NAME}" >> $GITHUB_OUTPUT
+          echo "target_subdir=${TARGET_SUBDIR}" >> $GITHUB_OUTPUT
+          echo "✅ 识别设备: ${DEVICE_NAME}, 目标路径: ${TARGET_SUBDIR}"
 
+  #####################################################################
+  # 作业 2: 编译固件
+  #####################################################################
   build:
-    name: 🛠️ 编译固件 (${{ github.event.inputs.immortalwrt_version }})
+    name: 🛠️ 编译固件 (${{ env.REPO_BRANCH }})
     needs: check
     runs-on: ubuntu-22.04
     timeout-minutes: 360
-    env:
-      REPO_URL: https://github.com/immortalwrt/immortalwrt.git
-      REPO_BRANCH: ${{ github.event.inputs.immortalwrt_version }}
-      CONFIG_FILE: ${{ github.event.inputs.config_file }}
-      DIY_P1_SH: config/DIY-1.sh
-      DIY_P2_SH: config/DIY-2.sh
-      UPLOAD_RELEASE: 'true'
-      TZ: Asia/Shanghai
+
     steps:
-      - name: 检出当前仓库代码
+      - name: 检出仓库代码
         uses: actions/checkout@v4
 
-      - name: 安装依赖
+      - name: 安装编译依赖
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential ccache flex gawk gettext libncurses5-dev libssl-dev python3-distutils rsync unzip zlib1g-dev
+          sudo apt-get install -y build-essential ccache flex gawk gettext libncurses5-dev libssl-dev python3-distutils rsync unzip zlib1g-dev file
 
-      - name: 克隆源码并应用配置
+      - name: 配置并缓存 ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: ${{ runner.os }}-ccache-${{ env.REPO_BRANCH }}-${{ hashFiles(env.CONFIG_FILE, env.DIY_P1_SH, env.DIY_P2_SH) }}
+          restore-keys: |
+            ${{ runner.os }}-ccache-${{ env.REPO_BRANCH }}-
+      - name: 初始化 ccache
         run: |
-          git clone --depth=1 -b "${{ env.REPO_BRANCH }}" "${{ env.REPO_URL }}" openwrt
-          cd openwrt
-          cp "../${{ env.CONFIG_FILE }}" .config
+          ccache -M 10G
+          ccache -s
+
+      - name: 克隆 ImmortalWrt 源码
+        run: git clone -b "${{ env.REPO_BRANCH }}" "${{ env.REPO_URL }}" openwrt
+
+      - name: 缓存 dl 目录
+        uses: actions/cache@v4
+        with:
+          path: openwrt/dl
+          key: ${{ runner.os }}-immortalwrt-dl-${{ env.REPO_BRANCH }}-${{ hashFiles(env.CONFIG_FILE) }}
+
+      - name: 【标准流程】加载自定义配置和脚本
+        working-directory: ./openwrt
+        run: |
+          # 运行 DIY 脚本 Part 1 (通常用于添加额外 feeds)
+          if [ -f "${{ github.workspace }}/${{ env.DIY_P1_SH }}" ]; then
+            chmod +x "${{ github.workspace }}/${{ env.DIY_P1_SH }}"
+            "${{ github.workspace }}/${{ env.DIY_P1_SH }}"
+          fi
+
+          # 更新并安装 Feeds
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+          # 加载 .config 文件
+          cp "${{ github.workspace }}/${{ env.CONFIG_FILE }}" .config
+          
+          # 运行 DIY 脚本 Part 2 (通常用于修改内核或软件包配置)
+          if [ -f "${{ github.workspace }}/${{ env.DIY_P2_SH }}" ]; then
+            chmod +x "${{ github.workspace }}/${{ env.DIY_P2_SH }}"
+            "${{ github.workspace }}/${{ env.DIY_P2_SH }}"
+          fi
+          
+          # 启用 ccache 并生成最终 .config
+          echo "CONFIG_CCACHE=y" >> .config
           make defconfig
 
-      - name: 执行 DIY 脚本 Part 1（如有）
-        if: hashFiles(env.DIY_P1_SH) != ''
-        run: |
-          chmod +x "../${{ env.DIY_P1_SH }}"
-          cd openwrt
-          "../${{ env.DIY_P1_SH }}"
+      - name: 下载软件包源码
+        working-directory: ./openwrt
+        run: make download -j$(nproc)
 
-      - name: 进入 SSH 调试（如启用）
-        if: ${{ github.event.inputs.ssh == 'true' }}
+      - name: SSH 调试 (如启用)
+        if: github.event.inputs.ssh == true
         uses: mxschmitt/action-tmate@v3
+        with:
+          working-directory: ./openwrt
 
       - name: 开始编译固件
+        id: compile
+        working-directory: ./openwrt
         run: |
-          cd openwrt
           make -j$(nproc) || make -j1 V=s
-
-      - name: 执行 DIY 脚本 Part 2（如有）
-        if: hashFiles(env.DIY_P2_SH) != ''
-        run: |
-          chmod +x "../${{ env.DIY_P2_SH }}"
-          cd openwrt
-          "../${{ env.DIY_P2_SH }}"
-
-      - name: 打包固件目录
-        run: |
-          cd openwrt/bin/packages/${{ needs.check.outputs.target_subdir }}/base/
-          FIRMWARE_DIR="../../../../${{ needs.check.outputs.device_name }}"
-          mkdir -p "$FIRMWARE_DIR"
-          cp -r ../../../../${{ needs.check.outputs.target_subdir }}/* "$FIRMWARE_DIR/"
-          tar -czf "firmware-${{ needs.check.outputs.device_name }}.tar.gz" "$FIRMWARE_DIR"
+          echo "status=success" >> $GITHUB_OUTPUT
 
       - name: 上传固件为 Artifact
+        if: steps.compile.outputs.status == 'success'
         uses: actions/upload-artifact@v4
         with:
           name: firmware-${{ needs.check.outputs.device_name }}
-          path: openwrt/bin/packages/${{ needs.check.outputs.target_subdir }}/base/firmware-${{ needs.check.outputs.device_name }}.tar.gz
+          path: openwrt/bin/targets/${{ needs.check.outputs.target_subdir }} # 这是正确的固件路径
 
+  #####################################################################
+  # 作业 3: 发布固件
+  #####################################################################
   publish:
-    name: 🚀 发布固件 (${{ github.event.inputs.immortalwrt_version }})
+    name: 🚀 发布固件 (${{ env.REPO_BRANCH }})
+    if: success() && env.UPLOAD_RELEASE == 'true'
     needs: [check, build]
     runs-on: ubuntu-22.04
     permissions:
       contents: write
-    env:
-      REPO_BRANCH: ${{ github.event.inputs.immortalwrt_version }}
-      UPLOAD_RELEASE: 'true'
+
     steps:
-      - name: 下载编译好的固件
+      - name: 下载编译好的固件 (从 Artifact)
         uses: actions/download-artifact@v4
         with:
           name: firmware-${{ needs.check.outputs.device_name }}
+          path: ./firmware # 下载到 firmware 目录
 
       - name: 准备 Release 说明
+        id: release_notes
         run: |
-          FILE_TIME=$(date +"%Y年%m月%d日")
-          cat > release_body.txt <<EOT
-**ImmortalWrt for ${{ needs.check.outputs.device_name }} (${{ env.REPO_BRANCH }})**
-
-- **Branch**: \`${{ env.REPO_BRANCH }}\`
-- **Build Time**: \${FILE_TIME}
-
-**默认登录信息**
-- **IP 地址**: \`192.168.1.1\`
-- **密码**: 空（首次登录后建议设置）
-
----
-由 GitHub Actions 自动构建。
-EOT
-          # 转义特殊字符并写入 GITHUB_ENV
-          ESCAPED_BODY=$(cat release_body.txt | sed 's/"/\\"/g')
-          echo "release_body=$ESCAPED_BODY" >> "$GITHUB_ENV"
+          BUILD_DATE=$(date +"%Y年%m月%d日")
+          # 使用 heredoc 生成多行字符串并输出，这是最稳健的方法
+          {
+            echo "**ImmortalWrt for ${{ needs.check.outputs.device_name }} (${{ env.REPO_BRANCH }})**"
+            echo ""
+            echo "- **Branch**: \`${{ env.REPO_BRANCH }}\`"
+            echo "- **Build Time**: ${BUILD_DATE}"
+            echo ""
+            echo "**默认登录信息**"
+            echo "- **IP 地址**: \`192.168.1.1\`"
+            echo "- **密码**: 空（首次登录后建议设置）"
+            echo ""
+            echo "---"
+            echo "由 GitHub Actions 自动构建。"
+          } >> release_body.md
 
       - name: 创建 Release 并上传固件
         uses: softprops/action-gh-release@v2
         with:
-          files: firmware-${{ needs.check.outputs.device_name }}.tar.gz
-          body: ${{ env.release_body }}
-          tag_name: ${{ needs.check.outputs.device_name }}-${{ env.REPO_BRANCH }}-${{ github.run_number }}
-          name: ${{ needs.check.outputs.device_name }} (${{ env.REPO_BRANCH }})
+          name: ${{ needs.check.outputs.device_name }} (${{ env.REPO_BRANCH }}) - build ${{ github.run_number }}
+          tag_name: ${{ needs.check.outputs.device_name }}-${{ env.REPO_BRANCH }}-${{ github.run_id }}
+          body_path: release_body.md
+          files: ./firmware/* # 上传 firmware 目录下的所有文件
