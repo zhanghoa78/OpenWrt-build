@@ -22,6 +22,7 @@ on:
         type: choice
         options:
           - master
+          - openwrt-24.10
           - openwrt-23.05
           - openwrt-21.02
       config_file:
