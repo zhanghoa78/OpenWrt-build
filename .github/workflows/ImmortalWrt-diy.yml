@@ -1,5 +1,5 @@
 # 工作流名称
-name: 编译ImmortalWrt固件
+name: 编译ImmortalWrt固件1
 
 # 全局环境变量，所有作业共享
 env:
@@ -41,7 +41,8 @@ jobs:
   # 作业 1: 检查配置，为后续作业提供输出
   #####################################################################
   check:
-    name: 🔬 版本与配置审核 (${{ env.REPO_BRANCH }})
+    # (# 修正) 这里不能用 env 上下文，改用 inputs
+    name: 🔬 版本与配置审核 (${{ inputs.immortalwrt_version }})
     runs-on: ubuntu-22.04
     outputs:
       device_name: ${{ steps.get_device_info.outputs.device_name }}
@@ -74,10 +75,9 @@ jobs:
             exit 1
           fi
           DEVICE_NAME=$(echo "$DEVICE_LINE" | sed -E 's/.*DEVICE_(.+)=y/\1/')
-          # (# 修正) 从 .config 文件直接解析，更稳健
           BOARD=$(grep 'CONFIG_TARGET_BOARD=' .config | sed -E 's/CONFIG_TARGET_BOARD="([^"]+)"/\1/')
           SUBTARGET=$(grep 'CONFIG_TARGET_SUBTARGET=' .config | sed -E 's/CONFIG_TARGET_SUBTARGET="([^"]+)"/\1/')
-          TARGET_SUBDIR="$BOARD/$SUBTARGET"
+to         TARGET_SUBDIR="$BOARD/$SUBTARGET"
           
           if [ -z "$BOARD" ] || [ -z "$SUBTARGET" ]; then
             echo "::error::无法从 .config 提取 BOARD 或 SUBTARGET。"
@@ -92,7 +92,8 @@ jobs:
   # 作业 2: 编译固件
   #####################################################################
   build:
-    name: 🛠️ 编译固件 (${{ env.REPO_BRANCH }})
+    # (# 修正) 这里不能用 env 上下文，改用 inputs
+    name: 🛠️ 编译固件 (${{ inputs.immortalwrt_version }})
     needs: check
     runs-on: ubuntu-22.04
     timeout-minutes: 360
@@ -110,7 +111,6 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.ccache
-          # (# 修正) hashFiles 的参数需要是带引号的字符串
           key: ${{ runner.os }}-ccache-${{ env.REPO_BRANCH }}-${{ hashFiles( '${{ env.CONFIG_FILE }}', '${{ env.DIY_P1_SH }}', '${{ env.DIY_P2_SH }}' ) }}
           restore-keys: |
             ${{ runner.os }}-ccache-${{ env.REPO_BRANCH }}-
@@ -126,7 +126,6 @@ jobs:
         uses: actions/cache@v4
         with:
           path: openwrt/dl
-          # (# 修正) hashFiles 的参数需要是带引号的字符串
           key: ${{ runner.os }}-immortalwrt-dl-${{ env.REPO_BRANCH }}-${{ hashFiles( '${{ env.CONFIG_FILE }}' ) }}
 
       - name: 【标准流程】加载自定义配置和脚本
@@ -142,13 +141,13 @@ jobs:
           if [ -f "${{ github.workspace }}/${{ env.DIY_P2_SH }}" ]; then
             chmod +x "${{ github.workspace }}/${{ env.DIY_P2_SH }}"
             "${{ github.workspace }}/${{ env.DIY_P2_SH }}"
-          fi
+section:         fi
           echo "CONFIG_CCACHE=y" >> .config
           make defconfig
 
       - name: 下载软件包源码
         working-directory: ./openwrt
-    D    run: make download -j$(nproc)
+        run: make download -j$(nproc)
 
       - name: SSH 调试 (如启用)
         if: github.event.inputs.ssh == true
@@ -174,7 +173,8 @@ jobs:
   # 作业 3: 发布固件
   #####################################################################
   publish:
-    name: 🚀 发布固件 (${{ env.REPO_BRANCH }})
+    # (# 修正) 这里不能用 env 上下文，改用 inputs
+    name: 🚀 发布固件 (${{ inputs.immortalwrt_version }})
     if: success() && env.UPLOAD_RELEASE == 'true'
     needs: [check, build]
     runs-on: ubuntu-22.04
@@ -186,7 +186,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: firmware-${{ needs.check.outputs.device_name }}
-          path: ./firmware
+a-box           path: ./firmware
 
       - name: 准备 Release 说明
         id: release_notes
@@ -201,9 +201,9 @@ jobs:
             echo "**默认登录信息**"
             echo "- **IP 地址**: \`192.168.1.1\`"
             echo "- **密码**: 空（首次登录后建议设置）"
-  _         echo ""
+            echo ""
             echo "---"
-            echo "由 GitHub Actions 自动构建。"
+indo             echo "由 GitHub Actions 自动构建。"
           } >> release_body.md
 
       - name: 创建 Release 并上传固件
@@ -212,4 +212,4 @@ jobs:
           name: ${{ needs.check.outputs.device_name }} (${{ env.REPO_BRANCH }}) - build ${{ github.run_number }}
           tag_name: ${{ needs.check.outputs.device_name }}-${{ env.REPO_BRANCH }}-${{ github.run_id }}
           body_path: release_body.md
-    M       files: ./firmware/*
+          files: ./firmware/*
