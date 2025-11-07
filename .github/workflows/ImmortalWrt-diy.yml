@@ -42,7 +42,7 @@ jobs:
   # 作业 1: 配置兼容性检查 (快速失败)
   #####################################################################
   check:
-    # 【修正点】: 使用 ${{ ... }} 包裹变量
+    # 【已修正】: 使用 ${{ ... }} 包裹变量
     name: 🔬 版本与配置审核 (${{ env.REPO_BRANCH }})
     runs-on: ubuntu-22.04
     outputs:
@@ -107,7 +107,7 @@ jobs:
   # 作业 2: 编译固件 (仅在检查通过后运行)
   #####################################################################
   build:
-    # 【修正点】: 使用 ${{ ... }} 包裹变量
+    # 【已修正】: 使用 ${{ ... }} 包裹变量
     name: 🛠️ 编译固件 (${{ env.REPO_BRANCH }})
     runs-on: ubuntu-22.04
     needs: check
@@ -134,7 +134,6 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.ccache
-          # 【修正点】: 使用 ${{ ... }} 包裹变量
           key: ${{ runner.os }}-ccache-${{ env.REPO_BRANCH }}-${{ hashFiles(env.CONFIG_FILE, env.DIY_P1_SH, env.DIY_P2_SH) }}
           restore-keys: |
             ${{ runner.os }}-ccache-${{ env.REPO_BRANCH }}-
@@ -189,7 +188,6 @@ jobs:
           make download -j$(nproc)
           find dl -name "*.badcheck" -delete
 
-      # 【修正点】: 为这个步骤添加了 'name' 和 'id'，使其结构完整
       - name: 编译固件
         id: compile
         working-directory: openwrt
@@ -208,7 +206,7 @@ jobs:
   # 作业 3: 发布固件 (已更新重命名和版本信息)
   #####################################################################
   publish:
-    # 【修正点】: 使用 ${{ ... }} 包裹变量
+    # 【已修正】: 使用 ${{ ... }} 包裹变量
     name: 🚀 发布固件 (${{ env.REPO_BRANCH }})
     runs-on: ubuntu-22.04
     needs: [check, build]
