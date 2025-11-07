@@ -1,5 +1,5 @@
 # 工作流名称
-name: 编译 ImmortalWrt 固件
+name: 编译ImmortalWrt固件
 
 # 全局环境变量，所有作业共享
 env:
