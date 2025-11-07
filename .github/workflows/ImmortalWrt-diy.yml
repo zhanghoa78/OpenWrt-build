@@ -32,7 +32,7 @@ on:
       ssh:
         description: '3. (可选) 在编译前进入 SSH 调试'
         required: false
-        default: false # boolean 类型的 default 应该是 false, 而不是字符串 'false'
+        default: false
         type: boolean
 
 jobs:
@@ -72,11 +72,9 @@ jobs:
             echo "::error::无法从 .config 识别设备型号，请检查配置文件是否适配 ${{ env.REPO_BRANCH }} 分支。"
             exit 1
           fi
-          # 从 .config 中提取设备型号
           DEVICE_NAME=$(echo "$DEVICE_LINE" | sed -E 's/.*DEVICE_(.+)=y/\1/')
-          # 使用 make print-... 命令更准确地获取目标路径
-          BOARD=$(make print-CONFIG_TARGET_BOARD | cut -d'=' -f2)
-          SUBTARGET=$(make print-CONFIG_TARGET_SUBTARGET | cut -d'=' -f2)
+          BOARD=$(make print-CONFIG_TARGET_BOARD 2>/dev/null | cut -d'=' -f2)
+          SUBTARGET=$(make print-CONFIG_TARGET_SUBTARGET 2>/dev/null | cut -d'=' -f2)
           TARGET_SUBDIR="$BOARD/$SUBTARGET"
           
           echo "device_name=${DEVICE_NAME}" >> $GITHUB_OUTPUT
@@ -125,26 +123,17 @@ jobs:
       - name: 【标准流程】加载自定义配置和脚本
         working-directory: ./openwrt
         run: |
-          # 运行 DIY 脚本 Part 1 (通常用于添加额外 feeds)
           if [ -f "${{ github.workspace }}/${{ env.DIY_P1_SH }}" ]; then
             chmod +x "${{ github.workspace }}/${{ env.DIY_P1_SH }}"
             "${{ github.workspace }}/${{ env.DIY_P1_SH }}"
           fi
-
-          # 更新并安装 Feeds
           ./scripts/feeds update -a
           ./scripts/feeds install -a
-
-          # 加载 .config 文件
           cp "${{ github.workspace }}/${{ env.CONFIG_FILE }}" .config
-          
-          # 运行 DIY 脚本 Part 2 (通常用于修改内核或软件包配置)
           if [ -f "${{ github.workspace }}/${{ env.DIY_P2_SH }}" ]; then
             chmod +x "${{ github.workspace }}/${{ env.DIY_P2_SH }}"
             "${{ github.workspace }}/${{ env.DIY_P2_SH }}"
           fi
-          
-          # 启用 ccache 并生成最终 .config
           echo "CONFIG_CCACHE=y" >> .config
           make defconfig
 
@@ -170,7 +159,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: firmware-${{ needs.check.outputs.device_name }}
-          path: openwrt/bin/targets/${{ needs.check.outputs.target_subdir }} # 这是正确的固件路径
+          path: openwrt/bin/targets/${{ needs.check.outputs.target_subdir }}
 
   #####################################################################
   # 作业 3: 发布固件
@@ -188,13 +177,12 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: firmware-${{ needs.check.outputs.device_name }}
-          path: ./firmware # 下载到 firmware 目录
+          path: ./firmware
 
       - name: 准备 Release 说明
         id: release_notes
         run: |
           BUILD_DATE=$(date +"%Y年%m月%d日")
-          # 使用 heredoc 生成多行字符串并输出，这是最稳健的方法
           {
             echo "**ImmortalWrt for ${{ needs.check.outputs.device_name }} (${{ env.REPO_BRANCH }})**"
             echo ""
@@ -215,4 +203,4 @@ jobs:
           name: ${{ needs.check.outputs.device_name }} (${{ env.REPO_BRANCH }}) - build ${{ github.run_number }}
           tag_name: ${{ needs.check.outputs.device_name }}-${{ env.REPO_BRANCH }}-${{ github.run_id }}
           body_path: release_body.md
-          files: ./firmware/* # 上传 firmware 目录下的所有文件
+          files: ./firmware/*
