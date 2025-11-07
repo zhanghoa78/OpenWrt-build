@@ -35,8 +35,8 @@ env:
   # <-- 【核心修改点 2】CONFIG_FILE 的值来自用户输入
   CONFIG_FILE: ${{ github.event.inputs.config_file }} 
   
-  DIY_P1_SH: config/immortalwrt/ea0326/DIY-1.sh
-  DIY_P2_SH: config/immortalwrt/ea0326/DIY-2.sh
+  DIY_P1_SH: config/immortalwrt/DIY-1.sh
+  DIY_P2_SH: config/immortalwrt/DIY-2.sh
   UPLOAD_RELEASE: 'true'
   TZ: Asia/Shanghai
 jobs:
