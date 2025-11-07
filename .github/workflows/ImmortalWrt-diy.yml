@@ -169,11 +169,11 @@ jobs:
       - name: 准备 Release 说明
         run: |
           FILE_TIME=$(date +"%Y年%m月%d日")
-          BODY=$(cat <<EOF
+          cat > release_body.txt <<EOT
 **ImmortalWrt for ${{ needs.check.outputs.device_name }} (${{ env.REPO_BRANCH }})**
 
 - **Branch**: \`${{ env.REPO_BRANCH }}\`
-- **Build Time**: ${FILE_TIME}
+- **Build Time**: \${FILE_TIME}
 
 **默认登录信息**
 - **IP 地址**: \`192.168.1.1\`
@@ -181,11 +181,10 @@ jobs:
 
 ---
 由 GitHub Actions 自动构建。
-EOF
-          )
-          echo "release_body<<EOF" >> $GITHUB_ENV
-          echo "$BODY" >> $GITHUB_ENV
-          echo "EOF" >> $GITHUB_ENV
+EOT
+          # 转义特殊字符并写入 GITHUB_ENV
+          ESCAPED_BODY=$(cat release_body.txt | sed 's/"/\\"/g')
+          echo "release_body=$ESCAPED_BODY" >> "$GITHUB_ENV"
 
       - name: 创建 Release 并上传固件
         uses: softprops/action-gh-release@v2
