@@ -27,7 +27,7 @@ on:
       config_file:
         description: '2. 输入 .config 文件在仓库中的完整路径'
         required: true
-        default: 'config/ea0326.config'
+        default: 'config/immortalwrt/ea0326/mini.config'
         type: string
       ssh:
         description: '3. (可选) 在编译前进入 SSH 调试'
