@@ -6,8 +6,8 @@ env:
   REPO_URL: https://github.com/immortalwrt/immortalwrt.git
   REPO_BRANCH: ${{ github.event.inputs.immortalwrt_version }}
   CONFIG_FILE: ${{ github.event.inputs.config_file }}
-  DIY_P1_SH: config/DIY-1.sh
-  DIY_P2_SH: config/DIY-2.sh
+  DIY_P1_SH: config/immortalwrt/DIY-1.sh
+  DIY_P2_SH: config/immortalwrt/DIY-2.sh
   UPLOAD_RELEASE: 'true'
   TZ: Asia/Shanghai
 
