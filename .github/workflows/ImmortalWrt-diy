@@ -1,59 +1,68 @@
 # 工作流名称
 name:编译 ImmortalWrt 固件
-固件
 # 工作流触发条件
 on:
   workflow_dispatch:
     inputs:
       immortalwrt_version:
-        description: '选择要编译的 ImmortalWrt 版本'
+        description: '1. 选择要编译的 ImmortalWrt 版本'
         required: true
         default: 'openwrt-24.10'
         type: choice
         options:
-          - master   # 最新的开发版
-          - openwrt-24.10 # 当前最新的测试版
-          - openwrt-23.05 # 上一个稳定版
-          - openwrt-21.02 # 更早的稳定版
+          - master
+          - openwrt-24.10
+          - openwrt-23.05
+          - openwrt-21.02
+          
+      # <-- 【核心修改点 1】将配置文件改为文本输入框
+      config_file:
+        description: '2. 输入 .config 文件在仓库中的完整路径'
+        required: true
+        default: 'config/immortalwrt/ea0326/mini.config'
+        type: string
+        
       ssh:
-        description: '在编译前进入 SSH 调试 (true/false)'
+        description: '3. (可选) 在编译前进入 SSH 调试'
         required: false
         default: 'false'
-
 # 环境变量，所有作业共享
 env:
-  # REPO_URL 和 REPO_BRANCH 现在是动态的
   REPO_URL: https://github.com/immortalwrt/immortalwrt.git
-  REPO_BRANCH: ${{ github.event.inputs.immortalwrt_version }} # <-- 核心改动点
+  REPO_BRANCH: ${{ github.event.inputs.immortalwrt_version }}
   
-  CONFIG_FILE: config/immortalwrt/ea0326/mini.config
+  # <-- 【核心修改点 2】CONFIG_FILE 的值来自用户输入
+  CONFIG_FILE: ${{ github.event.inputs.config_file }} 
+  
   DIY_P1_SH: config/immortalwrt/ea0326/DIY-1.sh
   DIY_P2_SH: config/immortalwrt/ea0326/DIY-2.sh
   UPLOAD_RELEASE: 'true'
   TZ: Asia/Shanghai
-
 jobs:
   #####################################################################
   # 作业 1: 配置兼容性检查 (快速失败)
   #####################################################################
   check:
-    name: 🔬 版本审核 (${{ env.REPO_BRANCH }})
+    name: 🔬 版本与配置审核 (${{ env.REPO_BRANCH }})
     runs-on: ubuntu-22.04
     outputs:
       device_name: ${{ steps.get_device_name.outputs.device_name }}
       target_subdir: ${{ steps.get_device_name.outputs.target_subdir }}
-
     steps:
       - name: 检出仓库代码
         uses: actions/checkout@v4
-
-      - name: 检查配置文件是否存在
+      # <-- 【核心修改点 3】增加配置文件存在性验证步骤
+      - name: 验证配置文件路径是否有效
+        id: check_config_path
         run: |
+          echo "正在检查用户输入的配置文件路径: ${{ env.CONFIG_FILE }}"
           if [ ! -f "${{ env.CONFIG_FILE }}" ]; then
-            echo "::error file=${{ env.CONFIG_FILE }}::配置文件未找到！请检查路径是否正确。"
+            echo "::error file=${{ env.CONFIG_FILE }}::错误：配置文件未找到！"
+            echo "::error::请确认你输入的路径 '${{ env.CONFIG_FILE }}' 在代码仓库中是正确的。"
             exit 1
           fi
-
+          echo "✅ 配置文件路径验证通过。"
+          
       - name: 安装最小化依赖
         run: |
           sudo apt-get update
@@ -61,13 +70,11 @@ jobs:
           
       - name: 克隆 ImmortalWrt 源码 (指定分支)
         run: git clone --depth=1 --branch "$REPO_BRANCH" "$REPO_URL" openwrt
-
       - name: 更新并安装 Feeds
         working-directory: ./openwrt
         run: |
           ./scripts/feeds update -a
           ./scripts/feeds install -a
-
       - name: 【核心】审核配置文件兼容性
         id: verify_config
         working-directory: ./openwrt
@@ -77,14 +84,10 @@ jobs:
           DEVICE_LINE=$(grep '^CONFIG_TARGET_.*_DEVICE_.*=y' .config)
           if [ -z "$DEVICE_LINE" ]; then
             echo "::error::配置兼容性审核失败！您的 '${{ env.CONFIG_FILE }}' 与选择的 '${{ env.REPO_BRANCH }}' 分支不兼容。"
-            echo "::error::请使用对应分支的源码重新生成配置文件。"
-            echo "--- 原始配置与更新后配置的差异 ---"
-            diff "../${{ env.CONFIG_FILE }}" .config || true
             exit 1
           fi
           echo "✅ 配置兼容性审核通过。"
           echo "status=success" >> $GITHUB_OUTPUT
-
       - name: 提取设备名称和路径供后续作业使用
         id: get_device_name
         if: steps.verify_config.outputs.status == 'success'
