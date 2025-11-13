@@ -3,6 +3,7 @@ CONFIG_TARGET_ramips=y
 CONFIG_TARGET_ramips_mt7620=y
 CONFIG_TARGET_ramips_mt7620_DEVICE_hiwifi_hc5761=y
 
+
 # 取消默认选择的Wi-Fi相关组件
 CONFIG_DEFAULT_kmod-mt76x0e=n
 CONFIG_DEFAULT_kmod-rt2800-soc=n
@@ -17,6 +18,9 @@ CONFIG_PACKAGE_luci-app-firewall=y
 CONFIG_PACKAGE_luci-app-opkg=y
 CONFIG_PACKAGE_luci-theme-bootstrap=y
 CONFIG_LUCI_LANG_zh_Hans=y
+CONFIG_PACKAGE_kmod-ipt-core=y
+CONFIG_PACKAGE_kmod-ipt-offload=y
+CONFIG_PACKAGE_kmod-nf-ipt=y
 
 # 您可以继续在这里添加其他您需要的软件包
 # 例如: CONFIG_PACKAGE_luci-app-ddns=y
