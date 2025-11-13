@@ -1,0 +1,213 @@
+name: 编译ImmortalWrt固件mt5620 (多作业版)
+
+env:
+  REPO_URL: https://github.com/immortalwrt/immortalwrt.git
+  REPO_BRANCH: ${{ github.event.inputs.immortalwrt_version }}
+  CONFIG_FILE: ${{ github.event.inputs.config_file }}
+  DIY_P1_SH: config/immortalwrt/DIY-1.sh
+  DIY_P2_SH: config/immortalwrt/DIY-2.sh
+  TZ: Asia/Shanghai
+
+on:
+  workflow_dispatch:
+    inputs:
+      immortalwrt_version:
+        description: '1. 选择要编译的 ImmortalWrt 版本'
+        required: true
+        default: 'openwrt-23.05'
+        type: choice
+        options:
+          - master
+          - openwrt-24.10
+          - openwrt-23.05
+          - openwrt-21.02
+      config_file:
+        description: '2. 输入 .config 文件在仓库中的完整路径'
+        required: true
+        default: 'config/immortalwrt/ea0326/mini.config'
+        type: string
+      ssh:
+        description: '3. (可选) 在编译前进入 SSH 调试'
+        required: false
+        default: false
+        type: boolean
+      upload_release:
+        description: '4. (可选) 是否上传固件到 Release'
+        required: false
+        default: true
+        type: boolean
+
+jobs:
+  #####################################################################
+  # 作业 1: 检查配置，为后续作业提供输出
+  #####################################################################
+  check:
+    name: 🔬 版本与配置审核 (${{ inputs.immortalwrt_version }})
+    runs-on: ubuntu-22.04
+    outputs:
+      device_name: ${{ steps.get_device_info.outputs.device_name }}
+      target_subdir: ${{ steps.get_device_info.outputs.target_subdir }}
+
+    steps:
+      - name: 检出仓库代码
+        uses: actions/checkout@v4
+
+      - name: 验证配置文件路径
+        run: |
+          if [ ! -f "${{ env.CONFIG_FILE }}" ]; then
+            echo "::error::配置文件未找到！路径: '${{ env.CONFIG_FILE }}'"
+            exit 1
+          fi
+          echo "✅ 配置文件存在: ${{ env.CONFIG_FILE }}"
+
+      - name: 克隆 ImmortalWrt 源码 (仅用于检查)
+        run: git clone --depth=1 -b "${{ env.REPO_BRANCH }}" "${{ env.REPO_URL }}" openwrt
+
+      - name: 提取设备信息
+        id: get_device_info
+        working-directory: ./openwrt
+        run: |
+          cp "../${{ env.CONFIG_FILE }}" .config
+          make defconfig
+          DEVICE_LINE=$(grep '^CONFIG_TARGET_.*_DEVICE_.*=y' .config)
+          if [ -z "$DEVICE_LINE" ]; then
+            echo "::error::无法从 .config 识别设备型号，请检查配置文件是否适配 ${{ env.REPO_BRANCH }} 分支。"
+            exit 1
+          fi
+          DEVICE_NAME=$(echo "$DEVICE_LINE" | sed -E 's/.*DEVICE_(.+)=y/\1/')
+          BOARD=$(grep 'CONFIG_TARGET_BOARD=' .config | sed -E 's/CONFIG_TARGET_BOARD="([^"]+)"/\1/')
+          SUBTARGET=$(grep 'CONFIG_TARGET_SUBTARGET=' .config | sed -E 's/CONFIG_TARGET_SUBTARGET="([^"]+)"/\1/')
+          TARGET_SUBDIR="$BOARD/$SUBTARGET"
+          
+          if [ -z "$BOARD" ] || [ -z "$SUBTARGET" ]; then
+            echo "::error::无法从 .config 提取 BOARD 或 SUBTARGET。"
+            exit 1
+          fi
+          
+          echo "device_name=${DEVICE_NAME}" >> $GITHUB_OUTPUT
+          echo "target_subdir=${TARGET_SUBDIR}" >> $GITHUB_OUTPUT
+          echo "✅ 识别设备: ${DEVICE_NAME}, 目标路径: ${TARGET_SUBDIR}"
+
+  #####################################################################
+  # 作业 2: 编译固件
+  #####################################################################
+  build:
+    name: 🛠️ 编译固件 (${{ inputs.immortalwrt_version }})
+    needs: check
+    runs-on: ubuntu-22.04
+    timeout-minutes: 360
+
+    steps:
+      - name: 检出仓库代码
+        uses: actions/checkout@v4
+
+      - name: 安装编译依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential ccache flex gawk gettext libncurses5-dev libssl-dev python3-distutils rsync unzip zlib1g-dev file
+
+      - name: 配置并缓存 ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: ${{ runner.os }}-ccache-${{ env.REPO_BRANCH }}-${{ hashFiles( '${{ env.CONFIG_FILE }}', '${{ env.DIY_P1_SH }}', '${{ env.DIY_P2_SH }}' ) }}
+          restore-keys: |
+            ${{ runner.os }}-ccache-${{ env.REPO_BRANCH }}-
+      - name: 初始化 ccache
+        run: |
+          ccache -M 10G
+          ccache -s
+
+      - name: 克隆 ImmortalWrt 源码
+        run: git clone -b "${{ env.REPO_BRANCH }}" "${{ env.REPO_URL }}" openwrt
+
+      - name: 缓存 dl 目录
+        uses: actions/cache@v4
+        with:
+          path: openwrt/dl
+          key: ${{ runner.os }}-immortalwrt-dl-${{ env.REPO_BRANCH }}-${{ hashFiles( '${{ env.CONFIG_FILE }}' ) }}
+
+      - name: 【标准流程】加载自定义配置和脚本
+        working-directory: ./openwrt
+        run: |
+          if [ -f "${{ github.workspace }}/${{ env.DIY_P1_SH }}" ]; then
+            chmod +x "${{ github.workspace }}/${{ env.DIY_P1_SH }}"
+            "${{ github.workspace }}/${{ env.DIY_P1_SH }}"
+          fi
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+          cp "${{ github.workspace }}/${{ env.CONFIG_FILE }}" .config
+          if [ -f "${{ github.workspace }}/${{ env.DIY_P2_SH }}" ]; then
+            chmod +x "${{ github.workspace }}/${{ env.DIY_P2_SH }}"
+            "${{ github.workspace }}/${{ env.DIY_P2_SH }}"
+          fi
+          echo "CONFIG_CCACHE=y" >> .config
+          make defconfig
+
+      - name: 下载软件包源码
+        working-directory: ./openwrt
+        run: make download -j$(nproc)
+
+      - name: SSH 调试 (如启用)
+        if: inputs.ssh == true
+        uses: mxschmitt/action-tmate@v3
+        with:
+          working-directory: ./openwrt
+
+      - name: 开始编译固件
+        id: compile
+        working-directory: ./openwrt
+        run: |
+          make -j$(nproc) || make -j1 V=s
+          echo "status=success" >> $GITHUB_OUTPUT
+
+      - name: 上传固件为 Artifact
+        if: steps.compile.outputs.status == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware-${{ needs.check.outputs.device_name }}
+          path: openwrt/bin/targets/${{ needs.check.outputs.target_subdir }}
+
+  #####################################################################
+  # 作业 3: 发布固件
+  #####################################################################
+  publish:
+    name: 🚀 发布固件 (${{ inputs.immortalwrt_version }})
+    if: success() && inputs.upload_release == true
+    needs: [check, build]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+
+    steps:
+      - name: 下载编译好的固件 (从 Artifact)
+        uses: actions/download-artifact@v4
+        with:
+          name: firmware-${{ needs.check.outputs.device_name }}
+          path: ./firmware
+
+      - name: 准备 Release 说明
+        id: release_notes
+        run: |
+          BUILD_DATE=$(date +"%Y年%m月%d日")
+          {
+            echo "**ImmortalWrt for ${{ needs.check.outputs.device_name }} (${{ env.REPO_BRANCH }})**"
+            echo ""
+            echo "- **Branch**: \`${{ env.REPO_BRANCH }}\`"
+            echo "- **Build Time**: ${BUILD_DATE}"
+            echo ""
+            echo "**默认登录信息**"
+            echo "- **IP 地址**: \`192.168.1.1\`"
+            echo "- **密码**: 空（首次登录后建议设置）"
+            echo ""
+            echo "---"
+            echo "由 GitHub Actions 自动构建。"
+          } >> release_body.md
+
+      - name: 创建 Release 并上传固件
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ needs.check.outputs.device_name }} (${{ env.REPO_BRANCH }}) - build ${{ github.run_number }}
+          tag_name: ${{ needs.check.outputs.device_name }}-${{ env.REPO_BRANCH }}-${{ github.run_id }}
+          body_path: release_body.md
+          files: ./firmware/*
