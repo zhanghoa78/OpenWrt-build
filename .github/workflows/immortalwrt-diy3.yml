@@ -48,7 +48,7 @@ on:
         type: choice
         options:
           - config/immortalwrt/DIY-2.sh
-          - config/immortalwrt/custom/DIY-2-light.sh
+          - config/immortalwrt/DIY-3.sh
           - none
 
       ssh:
