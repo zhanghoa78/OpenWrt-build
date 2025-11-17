@@ -1,85 +1,92 @@
 #!/bin/bash
 
 #================================================================================================
-# 脚本：DIY-3-Auto-Detect-V3.sh (逻辑修正的最终版)
+# 脚本：DIY-3-Auto-Detect-V3.sh (精简融合版)
 # 目标：
-#   - [V3 核心修正] 准确地基于“上游网关”而非“本机IP”来确定上游网络，以应对复杂路由环境。
-#   - 无需手动配置，移动到新网络后可自动适应。
-#   - 使用 hotplug 脚本动态更新防火墙，健壮且可靠。
-#   - 修复所有已知问题（拼写、依赖等）。
+#   - 不创建任何初始化规则
+#   - 仅当 WAN 接口上线且网络可识别时，动态创建完整 LuCI 访问规则
+#   - 使用 V3 精确逻辑（网关 + 掩码）
+#   - 无 jsonfilter 依赖，自动安全加固
 #================================================================================================
 
-echo "--- 正在执行 DIY-3: 配置全自动 WAN 访问 LuCI (V3 - 最终版) ---"
+echo "--- 正在执行 DIY-3: 仅通过 hotplug 动态添加 WAN LuCI 规则（V3 精简版）---"
 
-# 1. 基础配置：仅启用 luci, 确保 jsonfilter 存在
-# ====================================================================
-sed -i '/CONFIG_PACKAGE_luci-/d' .config
+# 1. 启用 LuCI（必须）
+grep -v "CONFIG_PACKAGE_luci-" .config > .config.tmp && mv .config.tmp .config
 echo "CONFIG_PACKAGE_luci=y" >> .config
-sed -i '/CONFIG_PACKAGE_ubus/a CONFIG_PACKAGE_jsonfilter=y' .config
-echo "✅ 已配置为仅使用 luci (HTTP) 并包含 jsonfilter"
+echo "✅ 已启用 LuCI"
 
+# 2. 【关键】不再创建 uci-defaults 脚本！规则完全由 hotplug 动态生成
 
-# 2. uci-defaults 脚本：首次启动时创建占位符规则 (无变化)
-# ====================================================================
-mkdir -p files/etc/uci-defaults
-cat > files/etc/uci-defaults/98-setup-wan-firewall <<'EOF'
-#!/bin/sh
-uci set firewall.allow_wan_luci=rule
-uci set firewall.allow_wan_luci.name='Allow-LuCI-From-Upstream-LAN'
-uci set firewall.allow_wan_luci.src='wan'
-uci set firewall.allow_wan_luci.proto='tcp'
-uci set firewall.allow_wan_luci.dest_port='80'
-uci set firewall.allow_wan_luci.target='ACCEPT'
-uci set firewall.allow_wan_luci.enabled='0'
-uci set uhttpd.main.rfc1918_filter='0'
-uci commit firewall
-uci commit uhttpd
-exit 0
-EOF
-echo "✅ 已创建 uci-defaults 脚本"
-
-
-# 3. hotplug 脚本：使用网关和掩码进行精确网络检测
+# 3. 创建 hotplug 脚本：检测 + 创建规则 + 安全加固
 # ====================================================================
 mkdir -p files/etc/hotplug.d/iface
 cat > files/etc/hotplug.d/iface/99-autodetect-wan-rule <<'EOF'
 #!/bin/sh
 
-# 只在 'wan' 接口 'ifup' 事件时执行
-[ "$ACTION" = "ifup" ] && [ "$INTERFACE" = "wan" ] || exit 0
+# 仅处理 WAN 类接口的 ifup 事件
+[ "$ACTION" = "ifup" ] || exit 0
+case "$INTERFACE" in
+    wan|wan0|internet) : ;;
+    *) exit 0 ;;
+esac
 
-# 延时以确保路由和 ubus 信息完全就绪
 sleep 2
 
-# [V3 核心修正]
-# 1. 从默认路由中获取权威的上游网关 IP
-GATEWAY=$(ip route show default | awk '/default via/ {print $3; exit}')
+# === 1. 获取网关和设备 ===
+GATEWAY=$(ip route show default 2>/dev/null | awk '/default via/ {print $3; exit}')
+DEV=$(ip route show default 2>/dev/null | awk '/default via/ {print $5; exit}')
 
-# 2. 从 ubus 获取权威的子网掩码位数
-WAN_INFO=$(ubus call network.interface.wan status)
-MASK=$(echo "$WAN_INFO" | jsonfilter -e '@["ipv4-address"][0].mask')
-
-# 必须同时成功获取到网关和子网掩码
-if [ -n "$GATEWAY" ] && [ -n "$MASK" ]; then
-    # 组合成 网关IP/掩码位数 的CIDR格式 (e.g., 192.168.1.1/24)
-    # 防火墙后端(iptables/nftables)足够智能，能将此正确解释为整个源网络 192.168.1.0/24
-    UPSTREAM_CIDR="$GATEWAY/$MASK"
-    
-    uci set firewall.allow_wan_luci.src_ip="$UPSTREAM_CIDR"
-    uci set firewall.allow_wan_luci.enabled='1'
-    uci commit firewall
-
-    logger -t wan-firewall "检测到上游网关为 $GATEWAY，子网掩码为 /$MASK。已基于 $UPSTREAM_CIDR 开启 WAN 口 LuCI 访问。"
-    /etc/init.d/firewall reload
-else
-    # 任何一个信息获取失败，都保持规则禁用，安全第一
-    uci set firewall.allow_wan_luci.enabled='0'
-    uci commit firewall
-    logger -t wan-firewall "无法确定上游网关或子网掩码。WAN 口 LuCI 访问保持禁用。"
-    /etc/init.d/firewall reload
+if [ -z "$GATEWAY" ] || [ -z "$DEV" ]; then
+    logger -t wan-firewall "WAN 未就绪，跳过配置。"
+    exit 1
 fi
+
+CIDR=$(ip addr show "$DEV" 2>/dev/null | awk '/inet / && !/127.0.0.1/ {print $2; exit}')
+if [ -z "$CIDR" ]; then
+    logger -t wan-firewall "WAN 无 IPv4 地址，跳过配置。"
+    exit 1
+fi
+
+MASK=${CIDR#*/}
+UPSTREAM_CIDR="$GATEWAY/$MASK"
+
+# === 2. 安全加固：确保 WAN zone 的 input 是 REJECT ===
+for i in $(seq 0 10); do
+    if uci get firewall.@zone[$i].name 2>/dev/null | grep -q "^wan$"; then
+        # 仅当当前是 ACCEPT 时才改为 REJECT（避免反复写入）
+        current=$(uci get firewall.@zone[$i].input 2>/dev/null)
+        if [ "$current" != "REJECT" ]; then
+            uci set firewall.@zone[$i].input='REJECT'
+            uci commit firewall
+            /etc/init.d/firewall reload >/dev/null 2>&1
+        fi
+        break
+    fi
+done
+
+# === 3. 动态创建完整规则（覆盖可能存在的旧规则）===
+uci -q delete firewall.allow_wan_luci
+uci set firewall.allow_wan_luci=rule
+uci set firewall.allow_wan_luci.name='Allow-LuCI-From-Upstream-LAN'
+uci set firewall.allow_wan_luci.src='wan'
+uci set firewall.allow_wan_luci.src_ip="$UPSTREAM_CIDR"
+uci set firewall.allow_wan_luci.proto='tcp'
+uci set firewall.allow_wan_luci.dest_port='80'
+uci set firewall.allow_wan_luci.target='ACCEPT'
+
+# 配置 uHTTPd 允许私有 IP 请求（只需设一次，但重复设无害）
+uci set uhttpd.main.rfc1918_filter='0'
+
+uci commit firewall
+uci commit uhttpd
+/etc/init.d/firewall reload >/dev/null 2>&1
+/etc/init.d/uhttpd reload >/dev/null 2>&1
+
+logger -t wan-firewall "✅ 成功创建 WAN LuCI 规则：允许 $UPSTREAM_CIDR 访问"
 EOF
-echo "✅ 已创建 hotplug 脚本，使用网关进行精确网络检测"
+chmod +x files/etc/hotplug.d/iface/99-autodetect-wan-rule
+echo "✅ 已创建 hotplug 脚本（动态创建规则，无初始化）"
 
 
 # 2. 定制个性化参数 (来自你的脚本)
